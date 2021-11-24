@@ -1,0 +1,265 @@
+---
+title: "Batch Re-name Files"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(reprex)
+knitr::opts_chunk$set(
+    warning = FALSE,
+    message = FALSE,
+    fig.path = "img/",
+    fig.width = 7.252,
+    fig.height = 4,
+    comment = "#>",
+    fig.retina = 3 # Better figure resolution
+)
+```
+
+## Motivation: Change *a lot* of file names
+
+Assume I have the following files: 
+
+```{r dir_tree}
+fs::dir_tree("img")
+```
+
+I want to change the prefix (`00-`) to `01-` for all of the files. I can do this with `fs` and `purrr`
+
+## File information
+
+```{r dir_files}
+dir_files <- fs::dir_info("img", regexp = "[.]png$") %>% 
+    filter(type == "file") %>% 
+    select(path, type, ends_with("time"))
+glimpse(dir_files)
+```
+
+Create the base name:
+
+```{r file_names}
+file_names <- dir_files %>% 
+    mutate(file_name = basename(path)) %>% 
+    select(path, file_name, everything())
+glimpse(file_names)
+```
+
+Now we replace all prefixes: 
+
+```{r new_file_name}
+new_file_names <- file_names %>% 
+    mutate(new_file_name = 
+               str_replace_all(file_name,
+                pattern = "^00-", 
+                replacement = "01-")) %>% 
+    select(path, file_name, new_file_name, everything())
+glimpse(new_file_names)
+```
+
+Add the original file path back to the new file names:
+
+```{r new_paths}
+new_paths <- new_file_names %>% 
+    mutate(base_path = str_remove_all(string = path, pattern = file_name),
+           new_path = paste0(base_path, new_file_name)) %>% 
+    select(path, new_path, file_name, new_file_name, ends_with("time"))
+glimpse(new_paths)
+```
+
+
+## Do it for one element 
+
+Now we can extract one element and rename it to see if it works: 
+
+```{r img-test}
+fs::dir_create("img-test")
+fs::file_copy(path = "raw-images/00-538-example-01.png", 
+              new_path = "img-test/00-538-example-01.png", 
+              overwrite = TRUE)
+fs::dir_tree("img-test")
+```
+
+```{r test-1}
+file.rename(from = "img-test/00-538-example-01.png", 
+            to = "img-test/01-538-example-01.png")
+```
+
+We can check to verify 
+
+```{r dir_tree-test-1}
+fs::dir_tree("img-test", regexp = "01-")
+```
+
+```{r unlink, echo=FALSE}
+unlink(x = "img-test/01-538-example-01.png", force = TRUE)
+```
+
+Now we do it for all the new names in `new_path`. 
+
+```{r old_paths}
+old_file_paths <- new_paths$path
+head(old_file_paths)
+```
+
+```{r new_file_paths}
+new_file_paths <- new_paths$new_path
+head(new_file_paths)
+```
+
+```{r map2}
+map2(.x = old_file_paths, .y = new_file_paths, file.rename)
+```
+
+Verify 
+
+```{r dir_tree-verify}
+fs::dir_tree("img", regexp = "01-")
+```
+
+## Reset `img/`
+
+```{r replace-img}
+# remove contents of img/
+fs::dir_delete("img")
+# get 00- files from raw-images/
+img_00_files <- fs::dir_ls("raw-images/", regexp = "/00-")
+# create img again
+new_img_path <- fs::dir_create("img/")
+# copy files over 
+purrr::quietly(map2(.x = img_00_files, .y = new_img_path, 
+     .f = fs::file_copy, overwrite = TRUE))
+# verify
+fs::dir_tree("img")
+```
+
+## `batch_rename_files()`
+
+Bundle as a function: 
+
+```{r batch_rename_files}
+batch_rename_files <- function(path, pattern, replace, prefix, extension) {
+    
+    # get file_ext
+    file_ext <- paste0("[.]", extension, "$")
+    
+    # get dir_files
+    dir_files <- fs::dir_info(path = path, regexp = file_ext) 
+    dir_files <- dplyr::filter(dir_files, type == "file") 
+    dir_files <- dplyr::select(dir_files, path, type, ends_with("time"))
+    
+    # define pattern
+    regex_pattern <- as.character(pattern)
+    # define replace
+    regex_replace <- as.character(replace)
+    
+        # prefix
+    if (prefix == TRUE) {
+        
+        regex <- paste0("^", regex_pattern)
+         # pattern
+    } else { 
+        
+        regex <- as.character(regex_pattern)
+       
+    } 
+
+    file_names <- mutate(dir_files, file_name = basename(path))
+    
+    new_file_names <- mutate(file_names, 
+           new_file_name = 
+                    stringr::str_replace_all(file_name,
+                    pattern = regex, 
+                    replacement = regex_replace))
+    
+    new_paths <- mutate(new_file_names, 
+                    base_path = 
+                    stringr::str_remove_all(string = path, pattern = file_name),
+                    new_path = paste0(base_path, new_file_name)) %>% 
+    select(path, new_path, file_name, new_file_name, ends_with("time"))
+    
+    old_file_paths <- new_paths$path
+    new_file_paths <- new_paths$new_path
+    
+    # return(new_file_paths)
+    
+    purrr::quietly(purrr::map2(.x = old_file_paths, .y = new_file_paths,
+                               file.rename))
+    
+}
+```
+
+## Set up tests 
+
+```{r test_01_path, results='hide'}
+test_01_path <- "test-01/"
+fs::dir_create(test_01_path)
+test_01_files <- fs::dir_ls("raw-images/", regexp = "/00-")
+purrr::quietly(map2(test_01_files, .y = test_01_path, 
+     .f = fs::file_copy, overwrite = TRUE))
+```
+
+```{r test_02_path, results='hide'}
+test_02_path <- "test-02/"
+fs::dir_create(test_02_path)
+test_02_files <- fs::dir_ls("raw-images/", regexp = "-1[.]png$")
+purrr::quietly(map2(test_02_files, .y = test_02_path, 
+     .f = fs::file_copy, overwrite = TRUE))
+```
+
+## Test 1
+
+Test renaming `00-` to `01-`:
+
+```{r test-01-batch_rename_files}
+batch_rename_files(path = "test-01", pattern = "00-", replace = "01-", prefix = TRUE, extension = "png")
+```
+
+```{r verify-test-01}
+fs::dir_tree("test-01")
+```
+
+## Reset `test-01/`
+
+```{r reset-test-01}
+# remove contents of img/
+fs::dir_delete("test-01/")
+# get 00- files from raw-images/
+img_00_files <- fs::dir_ls("raw-images/", regexp = "/00-")
+# create img again
+test_01_img_path <- fs::dir_create("test-01/")
+# copy files over 
+purrr::quietly(map2(.x = img_00_files, .y = test_01_img_path, 
+     .f = fs::file_copy, overwrite = TRUE))
+# verify
+fs::dir_tree("test-01/")
+```
+
+
+## Test 2
+
+Test renaming `-1.png` to `.png`:
+
+```{r batch_rename_files-test-2}
+batch_rename_files(path = "test-02", pattern = "-1", replace = "", prefix = FALSE, extension = "png")
+```
+
+```{r verify-test-02}
+fs::dir_tree("test-02")
+```
+
+## Reset `test-02/`
+
+```{r reset-test-02}
+# remove contents of img/
+fs::dir_delete("test-02/")
+# get 00- files from raw-images/
+img_1_suffix_files <- fs::dir_ls("raw-images/", regexp = "-1[.]png$")
+# create img again
+test_02_img_path <- fs::dir_create("test-02/")
+# copy files over 
+purrr::quietly(map2(.x = img_1_suffix_files, .y = test_02_img_path, 
+     .f = fs::file_copy, overwrite = TRUE))
+# verify
+fs::dir_tree("test-02/")
+```
